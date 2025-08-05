@@ -1,0 +1,7 @@
+matplotlib
+arch
+pandas_ta
+pandas
+numpy 
+streamlit
+plotly
