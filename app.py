@@ -287,7 +287,7 @@ def main():
     }
     
     # Load data
-    if st.sidebar.button("Load Sample Data") or st.session_state.data_loaded:
+    if st.sidebar.button("Analyze") or st.session_state.data_loaded:
         daily_df, intraday_df = load_sample_data()
         st.session_state.data_loaded = True
         st.session_state.daily_df = daily_df
@@ -517,8 +517,8 @@ def main():
                 
                 fig_vol = go.Figure()
                 fig_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values,
-                                           name='30-Day Rolling Volatility',
-                                           line=dict(color='orange')))
+                                        name='30-Day Rolling Volatility',
+                                        line=dict(color='orange')))
                 fig_vol.update_layout(title="Rolling Volatility (30-day)",
                                     xaxis_title="Date",
                                     yaxis_title="Annualized Volatility",
@@ -529,8 +529,7 @@ def main():
                 st.warning("No strategy returns available for risk analysis.")
     
     else:
-        st.info("👈 Click 'Load Sample Data' in the sidebar to begin the analysis.")
-        
+        st.info("👈 Click 'Analyze' in the sidebar to begin the analysis.")
         st.markdown("""
         ## About This Strategy
         

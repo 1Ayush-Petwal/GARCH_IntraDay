@@ -44,7 +44,7 @@ def predict_volatility(x):
     best_model = arch_model(y=x,
                             p=1,
                             q=3).fit(update_freq=5,
-                                     disp='off')
+                                   disp='off')
     
     variance_forecast = best_model.forecast(horizon=1).variance.iloc[-1,0]
 
