@@ -187,16 +187,35 @@ def generate_signals(daily_df, intraday_df, params):
     final_df['rsi'] = pandas_ta.rsi(close=final_df['close'], length=params['rsi_length'])
     
     bb = pandas_ta.bbands(close=final_df['close'], length=params['bb_length'])
-    final_df['bb_lower'] = bb.iloc[:, 0]
-    final_df['bb_upper'] = bb.iloc[:, 2]
-    final_df['bb_middle'] = bb.iloc[:, 1]
+    if bb is not None and not bb.empty:
+        final_df['bb_lower'] = bb.iloc[:, 0]
+        final_df['bb_upper'] = bb.iloc[:, 2]
+        final_df['bb_middle'] = bb.iloc[:, 1]
+    else:
+        # Fallback calculation if pandas_ta fails
+        sma = final_df['close'].rolling(window=params['bb_length']).mean()
+        std = final_df['close'].rolling(window=params['bb_length']).std()
+        final_df['bb_upper'] = sma + (std * 2)
+        final_df['bb_lower'] = sma - (std * 2)
+        final_df['bb_middle'] = sma
     
-    # Intraday signal
-    final_df['signal_intraday'] = final_df.apply(
-        lambda x: 1 if (x['rsi'] > params['rsi_overbought']) & (x['close'] > x['bb_upper'])
-        else (-1 if (x['rsi'] < params['rsi_oversold']) & (x['close'] < x['bb_lower']) else np.nan),
-        axis=1
-    )
+    # Enhanced Intraday signal with proper logic
+    # Signal generation: 1 = Sell signal (Overbought), -1 = Buy signal (Oversold)
+    final_df['rsi_overbought'] = final_df['rsi'] > params['rsi_overbought']
+    final_df['rsi_oversold'] = final_df['rsi'] < params['rsi_oversold']
+    final_df['price_above_bb_upper'] = final_df['close'] > final_df['bb_upper']
+    final_df['price_below_bb_lower'] = final_df['close'] < final_df['bb_lower']
+    
+    # Generate signals with clear conditions
+    final_df['signal_intraday'] = np.nan
+    
+    # Sell signal: RSI > 70 AND Price > BB Upper (Overbought condition)
+    sell_condition = final_df['rsi_overbought'] & final_df['price_above_bb_upper']
+    final_df.loc[sell_condition, 'signal_intraday'] = 1
+    
+    # Buy signal: RSI < 30 AND Price < BB Lower (Oversold condition)  
+    buy_condition = final_df['rsi_oversold'] & final_df['price_below_bb_lower']
+    final_df.loc[buy_condition, 'signal_intraday'] = -1
     
     # Combined signal
     final_df['return_sign'] = final_df.apply(
@@ -287,7 +306,7 @@ def main():
     }
     
     # Load data
-    if st.sidebar.button("Analyze") or st.session_state.data_loaded:
+    if st.sidebar.button("Load Sample Data") or st.session_state.data_loaded:
         daily_df, intraday_df = load_sample_data()
         st.session_state.data_loaded = True
         st.session_state.daily_df = daily_df
@@ -377,50 +396,180 @@ def main():
         with tab3:
             st.header("Signal Analysis")
             
-            # Technical indicators chart
-            recent_data = final_df.tail(1000)  # Last 1000 observations for better visualization
+            # Signal explanation
+            st.markdown("""
+            ### 📊 How Intraday Signals Work:
+            
+            **🔴 SELL SIGNALS (Red dots, value = 1):**
+            - Generated when **BOTH** conditions are met:
+              - RSI > 70 (Overbought condition)
+              - Price > Upper Bollinger Band (Price breakout above volatility band)
+            - This indicates potential overvaluation and mean reversion opportunity
+            
+            **🔵 BUY SIGNALS (Blue dots, value = -1):**
+            - Generated when **BOTH** conditions are met:
+              - RSI < 30 (Oversold condition)  
+              - Price < Lower Bollinger Band (Price breakout below volatility band)
+            - This indicates potential undervaluation and bounce opportunity
+            
+            **Strategy Logic:** The combination of momentum (RSI) and volatility (Bollinger Bands) helps identify extreme price movements that are likely to reverse.
+            """)
+            
+            # Technical indicators chart with enhanced signal visualization
+            recent_data = final_df.tail(2000).copy()  # More data for better visualization
+            
+            # Create signal markers for better visibility
+            sell_signals = recent_data[recent_data['signal_intraday'] == 1]
+            buy_signals = recent_data[recent_data['signal_intraday'] == -1]
             
             fig = make_subplots(rows=3, cols=1,
-                              subplot_titles=['Price with Bollinger Bands', 'RSI', 'Intraday Signals'],
-                              vertical_spacing=0.08)
+                              subplot_titles=[
+                                  'Price with Bollinger Bands & Signals', 
+                                  'RSI with Signal Conditions', 
+                                  'Signal Generation Logic'
+                              ],
+                              vertical_spacing=0.08,
+                              row_heights=[0.5, 0.3, 0.2])
             
             # Price and Bollinger Bands
             fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['close'],
-                                   name='Close Price', line=dict(color='black')), row=1, col=1)
+                                   name='Close Price', line=dict(color='black', width=2)), row=1, col=1)
             fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['bb_upper'],
-                                   name='BB Upper', line=dict(color='red', dash='dash')), row=1, col=1)
+                                   name='BB Upper', line=dict(color='red', dash='dash'), opacity=0.7), row=1, col=1)
             fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['bb_lower'],
-                                   name='BB Lower', line=dict(color='red', dash='dash')), row=1, col=1)
+                                   name='BB Lower', line=dict(color='red', dash='dash'), opacity=0.7), row=1, col=1)
             fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['bb_middle'],
-                                   name='BB Middle', line=dict(color='orange', dash='dot')), row=1, col=1)
+                                   name='BB Middle', line=dict(color='orange', dash='dot'), opacity=0.5), row=1, col=1)
             
-            # RSI
+            # Add signal markers on price chart
+            if len(sell_signals) > 0:
+                fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['close'],
+                                       mode='markers', name='SELL Signals',
+                                       marker=dict(color='red', size=10, symbol='triangle-down')), row=1, col=1)
+            
+            if len(buy_signals) > 0:
+                fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['close'],
+                                       mode='markers', name='BUY Signals', 
+                                       marker=dict(color='blue', size=10, symbol='triangle-up')), row=1, col=1)
+            
+            # RSI with conditions highlighted
             fig.add_trace(go.Scatter(x=recent_data.index, y=recent_data['rsi'],
-                                   name='RSI', line=dict(color='purple')), row=2, col=1)
+                                   name='RSI', line=dict(color='purple', width=2)), row=2, col=1)
             fig.add_hline(y=rsi_overbought, line_dash="dash", line_color="red", row=2, col=1)
-            fig.add_hline(y=rsi_oversold, line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_hline(y=rsi_oversold, line_dash="dash", line_color="blue", row=2, col=1)
             fig.add_hline(y=50, line_dash="dash", line_color="gray", row=2, col=1)
             
-            # Intraday signals
-            intraday_signals = recent_data['signal_intraday'].dropna()
-            if len(intraday_signals) > 0:
-                colors = ['red' if x == 1 else 'blue' for x in intraday_signals]
-                fig.add_scatter(x=intraday_signals.index, y=intraday_signals.values,
-                              mode='markers', name='Intraday Signals',
-                              marker=dict(color=colors, size=6), row=3, col=1)
+            # Highlight RSI extreme conditions
+            rsi_high = recent_data[recent_data['rsi'] > rsi_overbought]
+            rsi_low = recent_data[recent_data['rsi'] < rsi_oversold]
             
-            fig.update_layout(height=900, showlegend=True)
+            if len(rsi_high) > 0:
+                fig.add_trace(go.Scatter(x=rsi_high.index, y=rsi_high['rsi'],
+                                       mode='markers', name=f'RSI > {rsi_overbought}',
+                                       marker=dict(color='red', size=6, opacity=0.6)), row=2, col=1)
+            
+            if len(rsi_low) > 0:
+                fig.add_trace(go.Scatter(x=rsi_low.index, y=rsi_low['rsi'],
+                                       mode='markers', name=f'RSI < {rsi_oversold}',
+                                       marker=dict(color='blue', size=6, opacity=0.6)), row=2, col=1)
+            
+            # Signal timeline
+            all_signals = recent_data['signal_intraday'].dropna()
+            if len(all_signals) > 0:
+                colors = ['red' if x == 1 else 'blue' for x in all_signals]
+                fig.add_scatter(x=all_signals.index, y=all_signals.values,
+                              mode='markers', name='All Signals',
+                              marker=dict(color=colors, size=8), row=3, col=1)
+            
+            # Add annotations for y-axis labels
+            fig.update_yaxes(title_text="Price", row=1, col=1)
+            fig.update_yaxes(title_text="RSI", row=2, col=1)
+            fig.update_yaxes(title_text="Signal", row=3, col=1)
+            fig.update_xaxes(title_text="Date", row=3, col=1)
+            
+            fig.update_layout(height=1000, showlegend=True, 
+                            title_text="Technical Analysis with Signal Generation")
             st.plotly_chart(fig, use_container_width=True)
             
-            # Signal analysis by time of day
-            st.subheader("Signal Analysis by Time of Day")
-            final_df['hour'] = final_df.index.hour
-            signal_by_hour = final_df.groupby('hour')['signal_intraday'].count()
+            # Signal Statistics
+            st.subheader("📈 Signal Statistics")
             
-            fig_hour = px.bar(x=signal_by_hour.index, y=signal_by_hour.values,
-                             title="Intraday Signal Frequency by Hour",
-                             labels={'x': 'Hour of Day', 'y': 'Number of Signals'})
-            st.plotly_chart(fig_hour, use_container_width=True)
+            col1, col2, col3, col4 = st.columns(4)
+            
+            total_signals = len(final_df['signal_intraday'].dropna())
+            sell_signals_count = len(final_df[final_df['signal_intraday'] == 1])
+            buy_signals_count = len(final_df[final_df['signal_intraday'] == -1])
+            
+            with col1:
+                st.metric("Total Signals", f"{total_signals:,}")
+            with col2:
+                st.metric("Sell Signals", f"{sell_signals_count:,}", 
+                         delta=f"{sell_signals_count/total_signals*100:.1f}%" if total_signals > 0 else "0%")
+            with col3:
+                st.metric("Buy Signals", f"{buy_signals_count:,}", 
+                         delta=f"{buy_signals_count/total_signals*100:.1f}%" if total_signals > 0 else "0%")
+            with col4:
+                signal_ratio = sell_signals_count / buy_signals_count if buy_signals_count > 0 else 0
+                st.metric("Sell/Buy Ratio", f"{signal_ratio:.2f}")
+            
+            # Signal analysis by time of day
+            st.subheader("🕒 Signal Distribution by Time of Day")
+            
+            if total_signals > 0:
+                final_df['hour'] = final_df.index.hour
+                
+                # Separate analysis for sell and buy signals
+                sell_by_hour = final_df[final_df['signal_intraday'] == 1].groupby('hour').size()
+                buy_by_hour = final_df[final_df['signal_intraday'] == -1].groupby('hour').size()
+                
+                # Create combined bar chart
+                fig_hour = go.Figure()
+                
+                if len(sell_by_hour) > 0:
+                    fig_hour.add_trace(go.Bar(x=sell_by_hour.index, y=sell_by_hour.values,
+                                            name='Sell Signals', marker_color='red', opacity=0.7))
+                
+                if len(buy_by_hour) > 0:
+                    fig_hour.add_trace(go.Bar(x=buy_by_hour.index, y=buy_by_hour.values,
+                                            name='Buy Signals', marker_color='blue', opacity=0.7))
+                
+                fig_hour.update_layout(title="Signal Frequency by Hour of Day",
+                                     xaxis_title="Hour of Day", 
+                                     yaxis_title="Number of Signals",
+                                     barmode='group')
+                st.plotly_chart(fig_hour, use_container_width=True)
+                
+                # Signal effectiveness analysis
+                st.subheader("🎯 Signal Effectiveness Analysis")
+                
+                # Calculate forward returns after signals
+                signal_data = final_df[final_df['signal_intraday'].notna()].copy()
+                if len(signal_data) > 0:
+                    signal_data['forward_1h_return'] = signal_data['return'].rolling(12).sum().shift(-12)  # 1 hour forward return
+                    signal_data['forward_4h_return'] = signal_data['return'].rolling(48).sum().shift(-48)  # 4 hour forward return
+                    
+                    sell_performance = signal_data[signal_data['signal_intraday'] == 1][['forward_1h_return', 'forward_4h_return']].mean()
+                    buy_performance = signal_data[signal_data['signal_intraday'] == -1][['forward_1h_return', 'forward_4h_return']].mean()
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**Sell Signal Performance:**")
+                        if not sell_performance.empty:
+                            st.write(f"1-Hour Forward Return: {sell_performance['forward_1h_return']:.3%}")
+                            st.write(f"4-Hour Forward Return: {sell_performance['forward_4h_return']:.3%}")
+                        else:
+                            st.write("No sell signals available for analysis")
+                    
+                    with col2:
+                        st.write("**Buy Signal Performance:**")
+                        if not buy_performance.empty:
+                            st.write(f"1-Hour Forward Return: {buy_performance['forward_1h_return']:.3%}")
+                            st.write(f"4-Hour Forward Return: {buy_performance['forward_4h_return']:.3%}")
+                        else:
+                            st.write("No buy signals available for analysis")
+            else:
+                st.warning("No signals generated with current parameters. Try adjusting the RSI or Bollinger Band settings.")
         
         with tab4:
             st.header("Strategy Performance")
@@ -480,6 +629,9 @@ def main():
             st.header("Risk Analysis")
             
             if len(daily_returns) > 0:
+                # Filter out zero returns for better risk analysis
+                non_zero_returns = daily_returns[daily_returns != 0]
+                
                 # Drawdown analysis
                 cumulative_returns = (1 + daily_returns).cumprod()
                 running_max = cumulative_returns.expanding().max()
@@ -487,49 +639,130 @@ def main():
                 
                 fig_dd = go.Figure()
                 fig_dd.add_trace(go.Scatter(x=drawdown.index, y=drawdown.values,
-                                          fill='tonexty', name='Drawdown',
-                                          line=dict(color='red')))
+                                          fill='tozeroy', name='Drawdown',
+                                          line=dict(color='red'),
+                                          fillcolor='rgba(255,0,0,0.3)'))
                 fig_dd.update_layout(title="Strategy Drawdown",
                                    xaxis_title="Date",
                                    yaxis_title="Drawdown",
-                                   yaxis_tickformat='.1%',
+                                   yaxis_tickformat='.2%',
                                    height=400)
                 st.plotly_chart(fig_dd, use_container_width=True)
                 
-                # Risk metrics
+                # Risk metrics - using all returns including zeros
                 st.subheader("Risk Metrics")
                 col1, col2, col3 = st.columns(3)
                 
-                with col1:
+                # Calculate VaR properly
+                if len(daily_returns) > 20:  # Need sufficient data points
                     var_95 = daily_returns.quantile(0.05)
-                    st.metric("Value at Risk (95%)", f"{var_95:.2%}")
-                
-                with col2:
                     var_99 = daily_returns.quantile(0.01)
-                    st.metric("Value at Risk (99%)", f"{var_99:.2%}")
+                    
+                    # Expected shortfall (Conditional VaR)
+                    returns_below_var95 = daily_returns[daily_returns <= var_95]
+                    if len(returns_below_var95) > 0:
+                        expected_shortfall = returns_below_var95.mean()
+                    else:
+                        expected_shortfall = var_95
+                    
+                    with col1:
+                        st.metric("Value at Risk (95%)", f"{var_95:.3%}", 
+                                help="5% worst-case daily loss")
+                    
+                    with col2:
+                        st.metric("Value at Risk (99%)", f"{var_99:.3%}",
+                                help="1% worst-case daily loss")
+                    
+                    with col3:
+                        st.metric("Expected Shortfall", f"{expected_shortfall:.3%}",
+                                help="Average loss when VaR is exceeded")
+                else:
+                    with col1:
+                        st.metric("Value at Risk (95%)", "Insufficient Data")
+                    with col2:
+                        st.metric("Value at Risk (99%)", "Insufficient Data")
+                    with col3:
+                        st.metric("Expected Shortfall", "Insufficient Data")
                 
-                with col3:
-                    expected_shortfall = daily_returns[daily_returns <= var_95].mean()
-                    st.metric("Expected Shortfall", f"{expected_shortfall:.2%}")
+                # Additional risk metrics
+                col4, col5, col6 = st.columns(3)
+                
+                with col4:
+                    daily_vol = daily_returns.std()
+                    annualized_vol = daily_vol * np.sqrt(252)
+                    st.metric("Daily Volatility", f"{daily_vol:.3%}")
+                
+                with col5:
+                    st.metric("Annualized Volatility", f"{annualized_vol:.2%}")
+                
+                with col6:
+                    skewness = daily_returns.skew()
+                    st.metric("Skewness", f"{skewness:.3f}",
+                            help="Measure of asymmetry in returns distribution")
                 
                 # Rolling volatility
-                rolling_vol = daily_returns.rolling(30).std() * np.sqrt(252)
+                if len(daily_returns) > 30:
+                    rolling_vol = daily_returns.rolling(30).std() * np.sqrt(252)
+                    rolling_vol = rolling_vol.dropna()
+                    
+                    if len(rolling_vol) > 0:
+                        fig_vol = go.Figure()
+                        fig_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values,
+                                                   name='30-Day Rolling Volatility',
+                                                   line=dict(color='orange')))
+                        fig_vol.update_layout(title="Rolling Volatility (30-day)",
+                                            xaxis_title="Date",
+                                            yaxis_title="Annualized Volatility",
+                                            yaxis_tickformat='.1%',
+                                            height=400)
+                        st.plotly_chart(fig_vol, use_container_width=True)
                 
-                fig_vol = go.Figure()
-                fig_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol.values,
-                                        name='30-Day Rolling Volatility',
-                                        line=dict(color='orange')))
-                fig_vol.update_layout(title="Rolling Volatility (30-day)",
-                                    xaxis_title="Date",
-                                    yaxis_title="Annualized Volatility",
-                                    yaxis_tickformat='.1%',
-                                    height=400)
-                st.plotly_chart(fig_vol, use_container_width=True)
+                # Returns distribution analysis
+                st.subheader("Returns Distribution Analysis")
+                
+                col7, col8 = st.columns(2)
+                
+                with col7:
+                    # Histogram of returns
+                    fig_hist = px.histogram(daily_returns, 
+                                          title="Daily Returns Distribution",
+                                          nbins=50,
+                                          labels={'value': 'Daily Return', 'count': 'Frequency'})
+                    fig_hist.add_vline(x=var_95, line_dash="dash", line_color="red",
+                                     annotation_text="VaR 95%")
+                    fig_hist.add_vline(x=var_99, line_dash="dash", line_color="darkred",
+                                     annotation_text="VaR 99%")
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                
+                with col8:
+                    # Q-Q plot approximation
+                    sorted_returns = np.sort(daily_returns.dropna())
+                    theoretical_quantiles = np.linspace(0.01, 0.99, len(sorted_returns))
+                    normal_quantiles = np.random.normal(daily_returns.mean(), daily_returns.std(), len(sorted_returns))
+                    normal_quantiles = np.sort(normal_quantiles)
+                    
+                    fig_qq = go.Figure()
+                    fig_qq.add_trace(go.Scatter(x=normal_quantiles, y=sorted_returns,
+                                              mode='markers', name='Actual vs Normal',
+                                              marker=dict(size=4)))
+                    # Add diagonal line
+                    min_val = min(min(normal_quantiles), min(sorted_returns))
+                    max_val = max(max(normal_quantiles), max(sorted_returns))
+                    fig_qq.add_trace(go.Scatter(x=[min_val, max_val], y=[min_val, max_val],
+                                              mode='lines', name='Perfect Normal',
+                                              line=dict(color='red', dash='dash')))
+                    
+                    fig_qq.update_layout(title="Q-Q Plot: Returns vs Normal Distribution",
+                                       xaxis_title="Theoretical Normal Quantiles",
+                                       yaxis_title="Sample Quantiles")
+                    st.plotly_chart(fig_qq, use_container_width=True)
+                
             else:
                 st.warning("No strategy returns available for risk analysis.")
     
     else:
-        st.info("👈 Click 'Analyze' in the sidebar to begin the analysis.")
+        st.info("👈 Click 'Load Sample Data' in the sidebar to begin the analysis.")
+        
         st.markdown("""
         ## About This Strategy
         
